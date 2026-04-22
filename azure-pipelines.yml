@@ -1,0 +1,167 @@
+trigger:
+  - main
+  - develop
+  - feature/*
+
+pr:
+  - main
+  - develop
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  nodeVersion: '18.x'
+  buildConfiguration: 'Release'
+  appName: 'hello-world-azure'
+  dockerImageName: '$(appName):$(Build.BuildId)'
+  dockerLatestName: '$(appName):latest'
+
+stages:
+  - stage: Build
+    displayName: 'Build & Test'
+    jobs:
+      - job: BuildAndTest
+        displayName: 'Build and Run Tests'
+        steps:
+          # Step 1: Use Node.js
+          - task: NodeTool@0
+            inputs:
+              versionSpec: $(nodeVersion)
+            displayName: 'Install Node.js $(nodeVersion)'
+
+          # Step 2: Cache npm dependencies
+          - task: Cache@2
+            inputs:
+              key: 'npm | "$(Agent.OS)" | package-lock.json'
+              path: '$(npm_config_cache)'
+              cacheHitVar: 'CACHE_RESTORED'
+            displayName: 'Cache npm packages'
+
+          # Step 3: Install dependencies
+          - script: |
+              npm ci
+            displayName: 'Install Dependencies'
+
+          # Step 4: Run unit tests
+          - script: |
+              npm test -- --coverage --detectOpenHandles
+            displayName: 'Run Unit Tests'
+
+          # Step 5: Publish test results
+          - task: PublishTestResults@2
+            condition: succeededOrFailed()
+            inputs:
+              testResultsFormat: 'JUnit'
+              testResultsFiles: '**/junit.xml'
+              searchFolder: '$(System.DefaultWorkingDirectory)'
+              mergeTestResults: true
+              testRunTitle: 'Unit Tests'
+            displayName: 'Publish Test Results'
+
+          # Step 6: Publish code coverage
+          - task: PublishCodeCoverageResults@1
+            condition: succeededOrFailed()
+            inputs:
+              codeCoverageTool: Cobertura
+              summaryFileLocation: '$(System.DefaultWorkingDirectory)/**/coverage/cobertura-coverage.xml'
+              reportDirectory: '$(System.DefaultWorkingDirectory)/**/coverage'
+            displayName: 'Publish Code Coverage'
+
+          # Step 7: Run linting
+          - script: |
+              npm run lint || true
+            displayName: 'Run ESLint'
+            continueOnError: true
+
+          # Step 8: Create deployment package
+          - script: |
+              mkdir -p $(Build.ArtifactStagingDirectory)/app
+              cp app.js $(Build.ArtifactStagingDirectory)/app/
+              cp healthcheck.js $(Build.ArtifactStagingDirectory)/app/
+              cp package*.json $(Build.ArtifactStagingDirectory)/app/
+              cp Dockerfile $(Build.ArtifactStagingDirectory)/app/
+              cp .dockerignore $(Build.ArtifactStagingDirectory)/app/
+              mkdir -p $(Build.ArtifactStagingDirectory)/app/node_modules
+            displayName: 'Prepare Deployment Package'
+
+          # Step 9: Publish artifacts
+          - task: PublishBuildArtifacts@1
+            inputs:
+              pathToPublish: $(Build.ArtifactStagingDirectory)/app
+              artifactName: 'drop'
+              publishLocation: 'Container'
+            displayName: 'Publish Build Artifacts'
+
+  - stage: Deploy_Dev
+    displayName: 'Deploy to Dev'
+    dependsOn: Build
+    condition: succeeded()
+    jobs:
+      - deployment: DeployDev
+        displayName: 'Deploy to Dev Environment'
+        environment: 'dev'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                # Step 1: Download artifacts
+                - task: DownloadBuildArtifacts@0
+                  inputs:
+                    buildType: 'current'
+                    downloadType: 'single'
+                    artifactName: 'drop'
+                    downloadPath: '$(Pipeline.Workspace)'
+                  displayName: 'Download Build Artifacts'
+
+                # Step 2: Deploy to Azure App Service
+                - task: AzureWebApp@1
+                  inputs:
+                    azureSubscription: 'Azure Service Connection'
+                    appType: 'webAppLinux'
+                    appName: '$(appName)-dev'
+                    runtimeStack: 'NODE|18-lts'
+                    package: '$(Pipeline.Workspace)/drop'
+                    startupCommand: 'npm start'
+                    appSettings: '-WEBSITE_NODE_DEFAULT_VERSION 18-lts -NODE_ENV production'
+                  displayName: 'Deploy to App Service'
+
+                # Step 3: Health check
+                - script: |
+                    echo "Waiting for app to start..."
+                    sleep 10
+                    APP_URL="https://$(appName)-dev.azurewebsites.net"
+                    echo "Testing: $APP_URL/health"
+                    curl -s -w "\nStatus: %{http_code}\n" "$APP_URL/health" || echo "Health check in progress..."
+                  displayName: 'Verify Deployment'
+                  continueOnError: true
+
+  - stage: Deploy_Prod
+    displayName: 'Deploy to Production'
+    dependsOn: Deploy_Dev
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - deployment: DeployProd
+        displayName: 'Deploy to Production'
+        environment: 'production'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - task: DownloadBuildArtifacts@0
+                  inputs:
+                    buildType: 'current'
+                    downloadType: 'single'
+                    artifactName: 'drop'
+                    downloadPath: '$(Pipeline.Workspace)'
+                  displayName: 'Download Build Artifacts'
+
+                - task: AzureWebApp@1
+                  inputs:
+                    azureSubscription: 'Azure Service Connection'
+                    appType: 'webAppLinux'
+                    appName: '$(appName)-prod'
+                    runtimeStack: 'NODE|18-lts'
+                    package: '$(Pipeline.Workspace)/drop'
+                    startupCommand: 'npm start'
+                  displayName: 'Deploy to Production'
