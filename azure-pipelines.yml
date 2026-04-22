@@ -7,6 +7,18 @@ pr:
   - main
   - develop
 
+# 🔴 IMPORTANT: Service Connection Required
+# Before this pipeline runs, you MUST create a Service Connection in Azure DevOps.
+# See SERVICE_CONNECTION_STEP_BY_STEP.md for complete instructions.
+# Quick steps:
+#   1. Go to Project Settings (⚙️ bottom left)
+#   2. Click Service connections (under Pipelines)
+#   3. New service connection → Azure Resource Manager → Service principal (automatic)
+#   4. Select your subscription
+#   5. Name it EXACTLY: "Azure Service Connection"
+#   6. Click Verify → Save
+# After creating the service connection, run this pipeline!
+
 pool:
   vmImage: 'ubuntu-latest'
 
@@ -16,6 +28,9 @@ variables:
   appName: 'hello-world-azure'
   dockerImageName: '$(appName):$(Build.BuildId)'
   dockerLatestName: '$(appName):latest'
+  # IMPORTANT: Update this to match your Azure service connection name
+  # See AZURE_SETUP.md for how to create the service connection
+  azureServiceConnection: 'Azure Service Connection'
 
 stages:
   - stage: Build
@@ -117,7 +132,7 @@ stages:
                 # Step 2: Deploy to Azure App Service
                 - task: AzureWebApp@1
                   inputs:
-                    azureSubscription: 'Azure Service Connection'
+                    azureSubscription: '$(azureServiceConnection)'
                     appType: 'webAppLinux'
                     appName: '$(appName)-dev'
                     runtimeStack: 'NODE|18-lts'
@@ -158,7 +173,7 @@ stages:
 
                 - task: AzureWebApp@1
                   inputs:
-                    azureSubscription: 'Azure Service Connection'
+                    azureSubscription: '$(azureServiceConnection)'
                     appType: 'webAppLinux'
                     appName: '$(appName)-prod'
                     runtimeStack: 'NODE|18-lts'
