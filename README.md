@@ -304,7 +304,7 @@ MIT License - see LICENSE file
 
 ## 👤 Author
 
-Your Name
+Ande Tejasvi
 
 ## 🤝 Contributing
 
